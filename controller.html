@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Karaoke Controller</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 16px;
+            background: #0f0f0f;
+            color: #fff;
+        }
+
+        .paste-box {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .paste-box input {
+            flex: 1;
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            background: #1c1c1c;
+            color: #fff;
+        }
+
+        .paste-box input::placeholder {
+            color: #666;
+        }
+
+        button {
+            background: #0070f3;
+            color: #fff;
+            border: none;
+            padding: 12px 18px;
+            font-size: 16px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .hint {
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+
+        /* Preview card */
+        #preview {
+            display: none;
+            background: #1a1a1a;
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        #preview.visible {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        #preview img {
+            width: 100%;
+            aspect-ratio: 16/9;
+            object-fit: cover;
+        }
+
+        #preview .preview-body {
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        #preview .preview-title {
+            flex: 1;
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.4;
+        }
+
+        .add-btn {
+            background: #22c55e;
+            padding: 10px 16px;
+            font-size: 14px;
+            white-space: nowrap;
+            transition: background 0.2s, transform 0.1s;
+        }
+
+        .add-btn:active {
+            transform: scale(0.95);
+        }
+
+        .add-btn.added {
+            background: #444;
+            pointer-events: none;
+        }
+
+        /* Loading spinner */
+        .spinner {
+            text-align: center;
+            padding: 24px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        #status {
+            font-size: 12px;
+            color: #888;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%) translateY(80px);
+            background: #1c1c1c;
+            border: 1px solid #333;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-size: 14px;
+            opacity: 0;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        .toast.show {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="status">Connecting to Host...</div>
+
+    <div class="paste-box">
+        <input type="text" id="urlInput" placeholder="Paste YouTube link here..."
+            onkeydown="if(event.key==='Enter') handlePaste()" />
+        <button onclick="handlePaste()">Add</button>
+    </div>
+    <div class="hint">
+        Open YouTube → find a song → tap <strong>Share</strong> → <strong>Copy link</strong> → paste above
+    </div>
+
+    <div id="preview"></div>
+    <div id="toast" class="toast"></div>
+
+    <script>
+        const roomId = new URLSearchParams(window.location.search).get('room');
+        const peer = new Peer();
+        let conn;
+        let toastTimer;
+
+        function showToast(message, duration = 2000) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.classList.add('show');
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+        }
+
+        // --- YouTube URL → video ID extraction ---
+        function extractVideoId(input) {
+            const patterns = [
+                /(?:youtube\.com\/watch\?.*v=)([\w-]{11})/,
+                /(?:youtu\.be\/)([\w-]{11})/,
+                /(?:youtube\.com\/embed\/)([\w-]{11})/,
+                /(?:youtube\.com\/shorts\/)([\w-]{11})/,
+            ];
+            for (const p of patterns) {
+                const m = input.match(p);
+                if (m) return m[1];
+            }
+            return null;
+        }
+
+        // --- Fetch video title via YouTube oEmbed (free, no API key) ---
+        async function fetchVideoTitle(videoId) {
+            try {
+                const url = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+                return data.title || 'Untitled';
+            } catch (err) {
+                console.warn('oEmbed fetch failed, using fallback title:', err);
+                return 'YouTube Video';
+            }
+        }
+
+        // --- Main handler when user pastes a URL ---
+        async function handlePaste() {
+            const input = document.getElementById('urlInput').value.trim();
+            if (!input) return;
+
+            const videoId = extractVideoId(input);
+            if (!videoId) {
+                showToast('⚠️ Not a valid YouTube link');
+                return;
+            }
+
+            const preview = document.getElementById('preview');
+            preview.className = '';
+            preview.innerHTML = '<div class="spinner">Loading preview…</div>';
+            preview.classList.add('visible');
+
+            const title = await fetchVideoTitle(videoId);
+            const thumbUrl = `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+
+            // Build preview card with DOM API (safe from XSS)
+            preview.innerHTML = '';
+
+            const img = document.createElement('img');
+            img.src = thumbUrl;
+            img.alt = title;
+
+            const body = document.createElement('div');
+            body.className = 'preview-body';
+
+            const titleEl = document.createElement('div');
+            titleEl.className = 'preview-title';
+            titleEl.textContent = title;
+
+            const btn = document.createElement('button');
+            btn.className = 'add-btn';
+            btn.textContent = '+ Add to Queue';
+            btn.addEventListener('click', () => {
+                queueSong(videoId, title, btn);
+            });
+
+            body.appendChild(titleEl);
+            body.appendChild(btn);
+            preview.appendChild(img);
+            preview.appendChild(body);
+            preview.classList.add('visible');
+
+            // Clear input for next paste
+            document.getElementById('urlInput').value = '';
+            document.getElementById('urlInput').focus();
+        }
+
+        // --- Auto-detect paste event for instant preview ---
+        document.getElementById('urlInput').addEventListener('paste', (e) => {
+            // Use setTimeout so the pasted value is in the input
+            setTimeout(() => handlePaste(), 50);
+        });
+
+        // PeerJS Connection Setup — guard against missing room ID
+        if (!roomId) {
+            document.getElementById('status').textContent = '🔴 No room ID — scan the QR code from the host screen';
+        } else {
+            peer.on('open', () => {
+                conn = peer.connect(roomId);
+
+                conn.on('open', () => {
+                    document.getElementById('status').textContent = '🟢 Connected to Screen';
+                });
+
+                conn.on('close', () => {
+                    document.getElementById('status').textContent = '🔴 Disconnected from host';
+                    conn = null;
+                });
+
+                conn.on('error', (err) => {
+                    console.error('Connection error:', err);
+                    document.getElementById('status').textContent = '🔴 Connection error';
+                });
+            });
+
+            peer.on('error', (err) => {
+                console.error('PeerJS error:', err);
+                document.getElementById('status').textContent = '🔴 Failed to connect — check host is running';
+            });
+
+            peer.on('disconnected', () => {
+                document.getElementById('status').textContent = '🟡 Disconnected — attempting reconnect...';
+                peer.reconnect();
+            });
+        }
+
+        function queueSong(videoId, title, btn) {
+            if (!conn) {
+                showToast('⚠️ Not connected to host');
+                return;
+            }
+            conn.send({
+                type: 'ADD_SONG',
+                videoId: videoId,
+                title: title
+            });
+            btn.textContent = '✓ Added';
+            btn.classList.add('added');
+            showToast(`🎵 "${title}" added to queue`);
+        }
+    </script>
+</body>
+
+</html>

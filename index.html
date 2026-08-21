@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Karaoke Host</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <style>
+        body {
+            font-family: sans-serif;
+            display: flex;
+            height: 100vh;
+            margin: 0;
+            background: #0f0f0f;
+            color: #fff;
+        }
+
+        #player-section {
+            flex: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        #sidebar {
+            flex: 1;
+            border-left: 1px solid #272727;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .btn {
+            background: #272727;
+            color: #fff;
+            border: 1px solid #444;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .btn.active {
+            background: #0070f3;
+            border-color: #0070f3;
+        }
+
+        .btn-skip {
+            background: #e50914;
+            border: none;
+            font-weight: bold;
+        }
+
+        #now-playing {
+            text-align: center;
+            margin-top: 12px;
+            font-size: 14px;
+            color: #aaa;
+            min-height: 20px;
+        }
+
+        #now-playing span {
+            color: #fff;
+            font-weight: 600;
+        }
+
+        #queue-list {
+            flex: 1;
+            overflow-y: auto;
+            list-style: none;
+            padding: 0;
+            margin-top: 10px;
+        }
+
+        #queue-list li {
+            background: #1c1c1c;
+            padding: 10px;
+            margin-bottom: 8px;
+            border-radius: 6px;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        #queue-list li .song-info {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .remove-btn {
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+
+        .remove-btn:hover {
+            color: #e50914;
+            background: rgba(229, 9, 20, 0.1);
+        }
+
+        #connection-status {
+            font-size: 12px;
+            color: #888;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="player-section">
+        <div id="player"></div>
+
+        <div id="controls">
+            <button class="btn btn-skip" onclick="skipSong()">Skip ⏭️</button>
+            <!-- Audio channel splitting (L/R) is not possible with YouTube's
+                 cross-origin iframe. Buttons removed to avoid misleading users.
+                 Re-add if switching to a self-hosted player with Web Audio access. -->
+        </div>
+
+        <div id="now-playing"></div>
+    </div>
+
+    <div id="sidebar">
+        <div id="connection-status"></div>
+        <div style="text-align: center; margin-bottom: 20px;">
+            <canvas id="qr-code"></canvas>
+            <p style="margin: 5px 0; font-size: 13px; color: #aaa;">Scan to search &amp; queue songs</p>
+        </div>
+        <h3>Up Next</h3>
+        <ul id="queue-list"></ul>
+    </div>
+
+    <script src="https://www.youtube.com/iframe_api"></script>
+    <script>
+        let player;
+        let playerReady = false;
+        let currentSong = null;
+        const queue = [];
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        function onYouTubeIframeAPIReady() {
+            player = new YT.Player('player', {
+                height: '480',
+                width: '854',
+                playerVars: { 'autoplay': 1, 'controls': 1 },
+                events: {
+                    'onReady': () => { playerReady = true; },
+                    'onStateChange': (e) => { if (e.data === 0) playNext(); }
+                }
+            });
+        }
+
+        function playNext() {
+            if (queue.length > 0) {
+                currentSong = queue.shift();
+                renderQueue();
+                updateNowPlaying();
+                player.loadVideoById(currentSong.id);
+            } else {
+                currentSong = null;
+                updateNowPlaying();
+            }
+        }
+
+        function skipSong() {
+            if (queue.length > 0) {
+                playNext();
+            } else if (player && playerReady) {
+                player.stopVideo();
+                currentSong = null;
+                updateNowPlaying();
+            }
+        }
+
+        function removeFromQueue(index) {
+            queue.splice(index, 1);
+            renderQueue();
+        }
+
+        function updateNowPlaying() {
+            const el = document.getElementById('now-playing');
+            if (currentSong) {
+                el.innerHTML = `🎤 Now Playing: <span>${escapeHtml(currentSong.title)}</span>`;
+            } else {
+                el.textContent = '';
+            }
+        }
+
+        function renderQueue() {
+            const list = document.getElementById('queue-list');
+            list.innerHTML = queue.map((item, idx) =>
+                `<li>
+                    <span class="song-info"><b>#${idx + 1}</b> ${escapeHtml(item.title)}</span>
+                    <button class="remove-btn" onclick="removeFromQueue(${idx})" title="Remove">✕</button>
+                </li>`
+            ).join('');
+        }
+
+        // PeerJS Connection Setup
+        const peer = new Peer();
+
+        peer.on('open', (id) => {
+            const joinUrl = `${window.location.origin}/controller.html?room=${id}`;
+            QRCode.toCanvas(document.getElementById('qr-code'), joinUrl, { width: 140 });
+            document.getElementById('connection-status').textContent = '⏳ Waiting for controllers...';
+        });
+
+        peer.on('error', (err) => {
+            console.error('PeerJS error:', err);
+            document.getElementById('connection-status').textContent = '🔴 Connection error — refresh to retry';
+        });
+
+        peer.on('disconnected', () => {
+            document.getElementById('connection-status').textContent = '🟡 Disconnected — attempting reconnect...';
+            peer.reconnect();
+        });
+
+        peer.on('connection', (conn) => {
+            document.getElementById('connection-status').textContent = '🟢 Controller connected';
+
+            conn.on('data', (data) => {
+                if (data.type === 'ADD_SONG') {
+                    queue.push({ id: data.videoId, title: data.title });
+                    renderQueue();
+                    if (playerReady && player && (player.getPlayerState() !== 1 && player.getPlayerState() !== 2)) {
+                        playNext();
+                    }
+                }
+            });
+
+            conn.on('close', () => {
+                document.getElementById('connection-status').textContent = '⏳ Waiting for controllers...';
+            });
+        });
+    </script>
+</body>
+
+</html>
