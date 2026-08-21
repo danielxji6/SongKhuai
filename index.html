@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Karaoke Host</title>
+    <title>SongKhuai</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
     <style>
@@ -124,6 +124,75 @@
             text-align: center;
             margin-bottom: 8px;
         }
+
+        .btn-karaoke {
+            background: #1a1a2e;
+            border: 1px solid #6c63ff;
+            color: #b8b5ff;
+            transition: all 0.2s ease;
+        }
+
+        .btn-karaoke:hover {
+            background: #2a2a4e;
+        }
+
+        .btn-karaoke.active {
+            background: #6c63ff;
+            border-color: #6c63ff;
+            color: #fff;
+            box-shadow: 0 0 12px rgba(108, 99, 255, 0.4);
+        }
+
+        #channel-controls {
+            display: none;
+            gap: 6px;
+            margin-top: 8px;
+            justify-content: center;
+            animation: fadeIn 0.2s ease;
+        }
+
+        #channel-controls.visible {
+            display: flex;
+        }
+
+        .btn-channel {
+            background: #1c1c1c;
+            border: 1px solid #333;
+            color: #999;
+            padding: 6px 14px;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-channel:hover {
+            border-color: #666;
+            color: #ccc;
+        }
+
+        .btn-channel.active {
+            background: #6c63ff;
+            border-color: #6c63ff;
+            color: #fff;
+        }
+
+        #karaoke-hint {
+            font-size: 11px;
+            color: #666;
+            text-align: center;
+            margin-top: 4px;
+            display: none;
+        }
+
+        #karaoke-hint.visible {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 
@@ -134,10 +203,15 @@
 
         <div id="controls">
             <button class="btn btn-skip" onclick="skipSong()">Skip ⏭️</button>
-            <!-- Audio channel splitting (L/R) is not possible with YouTube's
-                 cross-origin iframe. Buttons removed to avoid misleading users.
-                 Re-add if switching to a self-hosted player with Web Audio access. -->
+            <button id="karaoke-btn" class="btn btn-karaoke" onclick="toggleKaraokeMode()" style="display:none;">🎤 Karaoke Mode</button>
         </div>
+
+        <div id="channel-controls">
+            <button class="btn-channel active" onclick="setChannel('both', this)">Both</button>
+            <button class="btn-channel" onclick="setChannel('left', this)">Left 🎵</button>
+            <button class="btn-channel" onclick="setChannel('right', this)">Right 🎤</button>
+        </div>
+        <div id="karaoke-hint">For karaoke tracks with vocals on one channel</div>
 
         <div id="now-playing"></div>
     </div>
@@ -158,6 +232,138 @@
         let playerReady = false;
         let currentSong = null;
         const queue = [];
+
+        // Karaoke Mode state
+        let karaokeActive = false;
+        let karaokeStream = null;
+        let audioCtx = null;
+        let sourceNode = null;
+        let splitterNode = null;
+        let leftGain = null;
+        let rightGain = null;
+        let mergerNode = null;
+
+        // Feature detection: show karaoke button only on supported browsers
+        if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+            document.addEventListener('DOMContentLoaded', () => {
+                document.getElementById('karaoke-btn').style.display = '';
+            });
+        }
+
+        async function toggleKaraokeMode() {
+            if (karaokeActive) {
+                stopKaraokeMode();
+            } else {
+                await startKaraokeMode();
+            }
+        }
+
+        async function startKaraokeMode() {
+            try {
+                // Request tab audio capture (video is required by the API but we discard it)
+                karaokeStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: true,
+                    preferCurrentTab: true
+                });
+
+                // Check if audio track was actually shared
+                const audioTracks = karaokeStream.getAudioTracks();
+                if (audioTracks.length === 0) {
+                    alert('No audio track was shared. Please try again and make sure to check "Share tab audio".');
+                    karaokeStream.getTracks().forEach(t => t.stop());
+                    karaokeStream = null;
+                    return;
+                }
+
+                // Stop the video track — we only need audio
+                karaokeStream.getVideoTracks().forEach(t => t.stop());
+
+                // Build the Web Audio graph
+                audioCtx = new AudioContext();
+                sourceNode = audioCtx.createMediaStreamSource(karaokeStream);
+                splitterNode = audioCtx.createChannelSplitter(2);
+                leftGain = audioCtx.createGain();
+                rightGain = audioCtx.createGain();
+                mergerNode = audioCtx.createChannelMerger(2);
+
+                // Wire: source → splitter → gains → merger → speakers
+                sourceNode.connect(splitterNode);
+                splitterNode.connect(leftGain, 0);  // Left channel
+                splitterNode.connect(rightGain, 1); // Right channel
+                leftGain.connect(mergerNode, 0, 0);
+                rightGain.connect(mergerNode, 0, 1);
+                mergerNode.connect(audioCtx.destination);
+
+                // Update UI
+                karaokeActive = true;
+                document.getElementById('karaoke-btn').classList.add('active');
+                document.getElementById('karaoke-btn').textContent = '🎤 Karaoke ON';
+                document.getElementById('channel-controls').classList.add('visible');
+                document.getElementById('karaoke-hint').classList.add('visible');
+
+                // Reset channel buttons to "Both"
+                setChannel('both', document.querySelector('#channel-controls .btn-channel'));
+
+                // Listen for stream ending (user revokes permission)
+                audioTracks[0].addEventListener('ended', () => {
+                    stopKaraokeMode();
+                });
+
+            } catch (err) {
+                console.log('Karaoke mode cancelled or failed:', err);
+                // User cancelled the dialog — that's fine, just clean up
+                if (karaokeStream) {
+                    karaokeStream.getTracks().forEach(t => t.stop());
+                    karaokeStream = null;
+                }
+            }
+        }
+
+        function stopKaraokeMode() {
+            // Tear down audio graph
+            if (sourceNode) { try { sourceNode.disconnect(); } catch(e) {} }
+            if (splitterNode) { try { splitterNode.disconnect(); } catch(e) {} }
+            if (leftGain) { try { leftGain.disconnect(); } catch(e) {} }
+            if (rightGain) { try { rightGain.disconnect(); } catch(e) {} }
+            if (mergerNode) { try { mergerNode.disconnect(); } catch(e) {} }
+            if (audioCtx) { audioCtx.close().catch(() => {}); }
+            if (karaokeStream) { karaokeStream.getTracks().forEach(t => t.stop()); }
+
+            // Reset state
+            sourceNode = splitterNode = leftGain = rightGain = mergerNode = audioCtx = karaokeStream = null;
+            karaokeActive = false;
+
+            // Update UI
+            document.getElementById('karaoke-btn').classList.remove('active');
+            document.getElementById('karaoke-btn').textContent = '🎤 Karaoke Mode';
+            document.getElementById('channel-controls').classList.remove('visible');
+            document.getElementById('karaoke-hint').classList.remove('visible');
+        }
+
+        function setChannel(mode, clickedBtn) {
+            if (!karaokeActive) return;
+
+            // Update gain values
+            switch (mode) {
+                case 'left':
+                    leftGain.gain.value = 1;
+                    rightGain.gain.value = 0;
+                    break;
+                case 'right':
+                    leftGain.gain.value = 0;
+                    rightGain.gain.value = 1;
+                    break;
+                default: // both
+                    leftGain.gain.value = 1;
+                    rightGain.gain.value = 1;
+                    break;
+            }
+
+            // Update active button
+            document.querySelectorAll('#channel-controls .btn-channel').forEach(b => b.classList.remove('active'));
+            if (clickedBtn) clickedBtn.classList.add('active');
+        }
 
         function escapeHtml(str) {
             const div = document.createElement('div');
@@ -236,7 +442,13 @@
         const peer = new Peer(getHostId());
 
         peer.on('open', (id) => {
-            const joinUrl = `${window.location.origin}/controller.html?room=${id}`;
+            let basePath = window.location.pathname;
+            if (basePath.endsWith('.html')) {
+                basePath = basePath.substring(0, basePath.lastIndexOf('/') + 1);
+            } else if (!basePath.endsWith('/')) {
+                basePath += '/';
+            }
+            const joinUrl = `${window.location.origin}${basePath}controller.html?room=${id}`;
             QRCode.toCanvas(document.getElementById('qr-code'), joinUrl, { width: 140 });
             document.getElementById('connection-status').textContent = '⏳ Waiting for controllers...';
         });
