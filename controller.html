@@ -140,6 +140,86 @@
             opacity: 1;
             transform: translateX(-50%) translateY(0);
         }
+
+        /* History section */
+        .history-section {
+            margin-top: 24px;
+        }
+
+        .history-section h2 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 0 0 12px 4px;
+        }
+
+        .history-empty {
+            text-align: center;
+            color: #555;
+            font-size: 13px;
+            padding: 24px 0;
+        }
+
+        .history-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: #1a1a1a;
+            border: 1px solid #2a2a2a;
+            border-radius: 10px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .history-item .history-title {
+            flex: 1;
+            font-size: 13px;
+            font-weight: 500;
+            line-height: 1.4;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+        }
+
+        .history-item .history-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .history-item .btn-queue {
+            background: #0070f3;
+            color: #fff;
+            border: none;
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .history-item .btn-remove {
+            background: transparent;
+            color: #666;
+            border: 1px solid #333;
+            padding: 6px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .history-item .btn-remove:hover {
+            color: #ef4444;
+            border-color: #ef4444;
+        }
     </style>
 </head>
 
@@ -157,6 +237,12 @@
     </div>
 
     <div id="preview"></div>
+
+    <div class="history-section">
+        <h2>History</h2>
+        <div id="historyList"></div>
+    </div>
+
     <div id="toast" class="toast"></div>
 
     <script>
@@ -164,6 +250,76 @@
         const peer = new Peer();
         let conn;
         let toastTimer;
+
+        // --- History persistence via localStorage ---
+        const HISTORY_KEY = 'songkhuai_history';
+
+        function loadHistory() {
+            try {
+                return JSON.parse(localStorage.getItem(HISTORY_KEY)) || [];
+            } catch {
+                return [];
+            }
+        }
+
+        function saveHistory(history) {
+            localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+        }
+
+        function addToHistory(videoId, title) {
+            const history = loadHistory();
+            // Avoid duplicates — move to top if exists
+            const idx = history.findIndex(h => h.videoId === videoId);
+            if (idx !== -1) history.splice(idx, 1);
+            history.unshift({ videoId, title, addedAt: Date.now() });
+            saveHistory(history);
+            renderHistory();
+        }
+
+        function removeFromHistory(videoId) {
+            const history = loadHistory().filter(h => h.videoId !== videoId);
+            saveHistory(history);
+            renderHistory();
+        }
+
+        function renderHistory() {
+            const container = document.getElementById('historyList');
+            const history = loadHistory();
+
+            if (history.length === 0) {
+                container.innerHTML = '<div class="history-empty">No songs added yet</div>';
+                return;
+            }
+
+            container.innerHTML = '';
+            history.forEach(item => {
+                const row = document.createElement('div');
+                row.className = 'history-item';
+
+                const titleEl = document.createElement('div');
+                titleEl.className = 'history-title';
+                titleEl.textContent = item.title;
+
+                const actions = document.createElement('div');
+                actions.className = 'history-actions';
+
+                const queueBtn = document.createElement('button');
+                queueBtn.className = 'btn-queue';
+                queueBtn.textContent = '+ Queue';
+                queueBtn.onclick = () => queueSong(item.videoId, item.title);
+
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'btn-remove';
+                removeBtn.textContent = 'Remove';
+                removeBtn.onclick = () => removeFromHistory(item.videoId);
+
+                actions.appendChild(queueBtn);
+                actions.appendChild(removeBtn);
+                row.appendChild(titleEl);
+                row.appendChild(actions);
+                container.appendChild(row);
+            });
+        }
 
         function showToast(message, duration = 2000) {
             const toast = document.getElementById('toast');
@@ -228,12 +384,11 @@
             // Automatically queue song
             queueSong(videoId, title);
 
-            // Build preview card with DOM API (safe from XSS)
-            preview.innerHTML = '';
+            // Save to history
+            addToHistory(videoId, title);
 
-            const img = document.createElement('img');
-            img.src = thumbUrl;
-            img.alt = title;
+            // Build preview card — title at the top
+            preview.innerHTML = '';
 
             const body = document.createElement('div');
             body.className = 'preview-body';
@@ -248,8 +403,13 @@
 
             body.appendChild(titleEl);
             body.appendChild(badge);
-            preview.appendChild(img);
             preview.appendChild(body);
+
+            const img = document.createElement('img');
+            img.src = thumbUrl;
+            img.alt = title;
+            preview.appendChild(img);
+
             preview.classList.add('visible');
 
             inputEl.focus();
@@ -306,6 +466,9 @@
             });
             showToast(`🎵 "${title}" added to queue`);
         }
+
+        // Render history on page load
+        renderHistory();
     </script>
 </body>
 
