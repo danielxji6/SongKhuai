@@ -418,6 +418,8 @@
         }
 
         function addToHistory(song) {
+            // Remove any existing entry with the same video ID to avoid duplicates
+            history = history.filter(h => h.id !== song.id);
             history.unshift({ id: song.id, title: song.title, ts: Date.now() });
             saveHistory();
             renderHistory();
