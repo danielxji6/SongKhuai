@@ -28,6 +28,16 @@
             box-sizing: border-box;
         }
 
+        #player {
+            width: 100%;
+            max-width: 100%;
+            aspect-ratio: 16 / 9;
+        }
+        #player iframe {
+            width: 100% !important;
+            height: 100% !important;
+        }
+
         #resize-handle {
             width: 5px;
             cursor: col-resize;
@@ -584,8 +594,8 @@
         // Draggable resize handle
         (function() {
             const handle = document.getElementById('resize-handle');
-            const player = document.getElementById('player-section');
-            const sidebar = document.getElementById('sidebar');
+            const playerSection = document.getElementById('player-section');
+            const sidebarEl = document.getElementById('sidebar');
             let dragging = false;
 
             handle.addEventListener('mousedown', (e) => {
@@ -601,8 +611,8 @@
                 const totalWidth = document.body.clientWidth;
                 let pct = (e.clientX / totalWidth) * 100;
                 pct = Math.max(10, Math.min(90, pct));
-                player.style.width = pct + '%';
-                sidebar.style.width = (100 - pct) + '%';
+                playerSection.style.width = pct + '%';
+                sidebarEl.style.width = (100 - pct) + '%';
             });
 
             document.addEventListener('mouseup', () => {
