@@ -370,11 +370,13 @@
 
         async function startKaraokeMode() {
             try {
-                // Request tab audio capture
-                // preferCurrentTab: pre-selects this tab in the share dialog
+                // Request tab audio capture with suppressLocalAudioPlayback.
+                // This is CRITICAL: it tells Chrome to suppress the YouTube player's
+                // direct audio output. Without it, getDisplayMedia creates a feedback
+                // loop (captures our processed output → re-processes → echo).
                 karaokeStream = await navigator.mediaDevices.getDisplayMedia({
                     video: true,
-                    audio: true,
+                    audio: { suppressLocalAudioPlayback: true },
                     preferCurrentTab: true
                 });
 
@@ -387,13 +389,7 @@
                     return;
                 }
 
-                // Try to suppress the original tab audio so we don't get echo.
-                // This is best-effort — if it fails, audio still works (with echo on "Both").
-                try {
-                    await audioTracks[0].applyConstraints({ suppressLocalAudioPlayback: true });
-                } catch (e) {
-                    console.log('suppressLocalAudioPlayback not supported, echo may occur');
-                }
+                console.log('Karaoke: audio track captured, settings:', audioTracks[0].getSettings());
 
                 // Stop the video track — we only need audio
                 karaokeStream.getVideoTracks().forEach(t => t.stop());
@@ -401,7 +397,9 @@
                 // Build the Web Audio graph with cross-routing
                 // This lets us send a single source channel to BOTH speakers (mono)
                 audioCtx = new AudioContext();
-                await audioCtx.resume(); // Ensure context is running
+                await audioCtx.resume(); // CRITICAL: ensure context is not suspended
+                console.log('Karaoke: AudioContext state:', audioCtx.state);
+
                 sourceNode = audioCtx.createMediaStreamSource(karaokeStream);
                 splitterNode = audioCtx.createChannelSplitter(2);
                 llGain = audioCtx.createGain(); // L→L
@@ -413,16 +411,16 @@
                 // Wire: source → splitter → 4 gain paths → merger → speakers
                 sourceNode.connect(splitterNode);
                 // Left source channel (splitter output 0)
-                splitterNode.connect(llGain, 0); // left src → left-to-left gain
-                splitterNode.connect(lrGain, 0); // left src → left-to-right gain
+                splitterNode.connect(llGain, 0);
+                splitterNode.connect(lrGain, 0);
                 // Right source channel (splitter output 1)
-                splitterNode.connect(rlGain, 1); // right src → right-to-left gain
-                splitterNode.connect(rrGain, 1); // right src → right-to-right gain
+                splitterNode.connect(rlGain, 1);
+                splitterNode.connect(rrGain, 1);
                 // Route to merger (input 0 = left speaker, input 1 = right speaker)
-                llGain.connect(mergerNode, 0, 0); // L→L speaker
-                lrGain.connect(mergerNode, 0, 1); // L→R speaker
-                rlGain.connect(mergerNode, 0, 0); // R→L speaker
-                rrGain.connect(mergerNode, 0, 1); // R→R speaker
+                llGain.connect(mergerNode, 0, 0);
+                lrGain.connect(mergerNode, 0, 1);
+                rlGain.connect(mergerNode, 0, 0);
+                rrGain.connect(mergerNode, 0, 1);
                 mergerNode.connect(audioCtx.destination);
 
                 // Update UI
