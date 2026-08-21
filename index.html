@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Karaoke Host</title>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
     <style>
         body {
             font-family: sans-serif;
@@ -224,7 +224,16 @@
         }
 
         // PeerJS Connection Setup
-        const peer = new Peer();
+        // Generate a stable host ID that survives page refreshes
+        function getHostId() {
+            let id = localStorage.getItem('songkhuai-host-id');
+            if (!id) {
+                id = 'sk-' + Math.random().toString(36).substring(2, 10);
+                localStorage.setItem('songkhuai-host-id', id);
+            }
+            return id;
+        }
+        const peer = new Peer(getHostId());
 
         peer.on('open', (id) => {
             const joinUrl = `${window.location.origin}/controller.html?room=${id}`;
