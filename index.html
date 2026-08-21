@@ -371,12 +371,10 @@
         async function startKaraokeMode() {
             try {
                 // Request tab audio capture
-                // - suppressLocalAudioPlayback: prevents echo by silencing the
-                //   original tab audio; we re-output it through our Web Audio graph
-                // - preferCurrentTab: pre-selects this tab in the share dialog
+                // preferCurrentTab: pre-selects this tab in the share dialog
                 karaokeStream = await navigator.mediaDevices.getDisplayMedia({
                     video: true,
-                    audio: { suppressLocalAudioPlayback: true },
+                    audio: true,
                     preferCurrentTab: true
                 });
 
@@ -389,12 +387,21 @@
                     return;
                 }
 
+                // Try to suppress the original tab audio so we don't get echo.
+                // This is best-effort — if it fails, audio still works (with echo on "Both").
+                try {
+                    await audioTracks[0].applyConstraints({ suppressLocalAudioPlayback: true });
+                } catch (e) {
+                    console.log('suppressLocalAudioPlayback not supported, echo may occur');
+                }
+
                 // Stop the video track — we only need audio
                 karaokeStream.getVideoTracks().forEach(t => t.stop());
 
                 // Build the Web Audio graph with cross-routing
                 // This lets us send a single source channel to BOTH speakers (mono)
                 audioCtx = new AudioContext();
+                await audioCtx.resume(); // Ensure context is running
                 sourceNode = audioCtx.createMediaStreamSource(karaokeStream);
                 splitterNode = audioCtx.createChannelSplitter(2);
                 llGain = audioCtx.createGain(); // L→L
