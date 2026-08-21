@@ -134,23 +134,45 @@
             align-items: center;
             justify-content: space-between;
             animation: fadeIn 0.2s ease;
+            transition: background 0.4s ease;
+        }
+
+        .song-list li.flash-green {
+            background: rgba(34, 197, 94, 0.25);
         }
 
         .song-list li .song-info {
             flex: 1;
+            min-width: 0;
             overflow: hidden;
-            text-overflow: ellipsis;
             white-space: nowrap;
+            position: relative;
+        }
+
+        .song-list li .song-info .song-title-text {
+            display: inline-block;
+            white-space: nowrap;
+        }
+
+        .song-list li .song-info:hover .song-title-text.overflowing {
+            animation: marquee-scroll var(--marquee-duration, 5s) linear infinite;
+        }
+
+        @keyframes marquee-scroll {
+            0%   { transform: translateX(0); }
+            100% { transform: translateX(calc(-100% - 2em)); }
         }
 
         .song-list li .row-actions {
             display: flex;
             gap: 2px;
             flex-shrink: 0;
+            margin-left: 8px;
         }
 
         .remove-btn,
-        .requeue-btn {
+        .requeue-btn,
+        .top-btn {
             background: none;
             border: none;
             color: #666;
@@ -170,6 +192,11 @@
         .requeue-btn:hover {
             color: #0070f3;
             background: rgba(0, 112, 243, 0.1);
+        }
+
+        .top-btn:hover {
+            color: #facc15;
+            background: rgba(250, 204, 21, 0.1);
         }
 
         /* History header row */
@@ -329,16 +356,25 @@
             }
         }
 
+        function pushToTop(index) {
+            if (index <= 0) return;
+            const [item] = queue.splice(index, 1);
+            queue.unshift(item);
+            renderQueue();
+        }
+
         function renderQueue() {
             const list = document.getElementById('queue-list');
             list.innerHTML = queue.map((item, idx) =>
                 `<li>
-                    <span class="song-info"><b>#${idx + 1}</b> ${escapeHtml(item.title)}</span>
+                    <span class="song-info"><b>#${idx + 1}</b> <span class="song-title-text">${escapeHtml(item.title)}</span></span>
                     <div class="row-actions">
+                        <button class="top-btn" onclick="pushToTop(${idx})" title="Move to top">⤒</button>
                         <button class="remove-btn" onclick="removeFromQueue(${idx})" title="Remove">✕</button>
                     </div>
                 </li>`
             ).join('');
+            initMarquees(list);
         }
 
         // ---- Tab switching ----
@@ -376,12 +412,36 @@
 
         function requeueFromHistory(index) {
             const song = history[index];
+            // Check for duplicates in currentSong and queue
+            if (currentSong && currentSong.id === song.id) {
+                flashHistoryRow(index, false);
+                return;
+            }
+            if (queue.some(q => q.id === song.id)) {
+                flashHistoryRow(index, false);
+                return;
+            }
             queue.push({ id: song.id, title: song.title });
             renderQueue();
+            flashHistoryRow(index, true);
             // auto-play if idle
             if (playerReady && player && (player.getPlayerState() !== 1 && player.getPlayerState() !== 2)) {
                 playNext();
             }
+        }
+
+        function flashHistoryRow(index, success) {
+            const list = document.getElementById('history-list');
+            const row = list.children[index];
+            if (!row) return;
+            row.classList.add('flash-green');
+            if (!success) {
+                // brief red-ish shake for duplicate
+                row.style.background = 'rgba(239, 68, 68, 0.25)';
+                setTimeout(() => { row.style.background = ''; row.classList.remove('flash-green'); }, 500);
+                return;
+            }
+            setTimeout(() => row.classList.remove('flash-green'), 600);
         }
 
         function handleClearHistory() {
@@ -416,13 +476,29 @@
             }
             list.innerHTML = history.map((item, idx) =>
                 `<li>
-                    <span class="song-info">${escapeHtml(item.title)}</span>
+                    <span class="song-info"><span class="song-title-text">${escapeHtml(item.title)}</span></span>
                     <div class="row-actions">
                         <button class="requeue-btn" onclick="requeueFromHistory(${idx})" title="Add back to queue">↩</button>
                         <button class="remove-btn" onclick="removeFromHistory(${idx})" title="Remove">✕</button>
                     </div>
                 </li>`
             ).join('');
+            initMarquees(list);
+        }
+
+        // Marquee helper: detect overflowing titles and set animation duration
+        function initMarquees(container) {
+            container.querySelectorAll('.song-title-text').forEach(el => {
+                const parent = el.closest('.song-info');
+                if (el.scrollWidth > parent.clientWidth) {
+                    el.classList.add('overflowing');
+                    // ~50px per second scroll speed
+                    const dur = Math.max(3, el.scrollWidth / 50);
+                    el.style.setProperty('--marquee-duration', dur + 's');
+                } else {
+                    el.classList.remove('overflowing');
+                }
+            });
         }
 
         // Initial render of history on load
@@ -468,6 +544,8 @@
             conn.on('data', (data) => {
                 if (data.type === 'ADD_SONG') {
                     queue.push({ id: data.videoId, title: data.title });
+                    // Instantly add to history when song arrives from controller
+                    addToHistory({ id: data.videoId, title: data.title });
                     renderQueue();
                     if (playerReady && player && (player.getPlayerState() !== 1 && player.getPlayerState() !== 2)) {
                         playNext();
