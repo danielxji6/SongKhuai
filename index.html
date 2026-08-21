@@ -76,15 +76,55 @@
             font-weight: 600;
         }
 
-        #queue-list {
+        /* Tab bar */
+        .tab-bar {
+            display: flex;
+            border-bottom: 1px solid #272727;
+            margin-bottom: 10px;
+        }
+
+        .tab-btn {
+            flex: 1;
+            background: none;
+            border: none;
+            color: #666;
+            font-size: 14px;
+            font-weight: 600;
+            padding: 10px 0;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: color 0.2s, border-color 0.2s;
+        }
+
+        .tab-btn:hover {
+            color: #aaa;
+        }
+
+        .tab-btn.active {
+            color: #fff;
+            border-bottom-color: #0070f3;
+        }
+
+        .tab-panel {
+            display: none;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .tab-panel.active {
+            display: flex;
+        }
+
+        .song-list {
             flex: 1;
             overflow-y: auto;
             list-style: none;
             padding: 0;
-            margin-top: 10px;
+            margin: 0;
         }
 
-        #queue-list li {
+        .song-list li {
             background: #1c1c1c;
             padding: 10px;
             margin-bottom: 8px;
@@ -93,16 +133,24 @@
             display: flex;
             align-items: center;
             justify-content: space-between;
+            animation: fadeIn 0.2s ease;
         }
 
-        #queue-list li .song-info {
+        .song-list li .song-info {
             flex: 1;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        .remove-btn {
+        .song-list li .row-actions {
+            display: flex;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        .remove-btn,
+        .requeue-btn {
             background: none;
             border: none;
             color: #666;
@@ -111,11 +159,53 @@
             padding: 4px 8px;
             border-radius: 4px;
             flex-shrink: 0;
+            transition: color 0.15s, background 0.15s;
         }
 
         .remove-btn:hover {
             color: #e50914;
             background: rgba(229, 9, 20, 0.1);
+        }
+
+        .requeue-btn:hover {
+            color: #0070f3;
+            background: rgba(0, 112, 243, 0.1);
+        }
+
+        /* History header row */
+        .history-header {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 8px;
+        }
+
+        .btn-clear {
+            background: #272727;
+            color: #999;
+            border: 1px solid #444;
+            padding: 5px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-clear:hover {
+            border-color: #666;
+            color: #ccc;
+        }
+
+        .btn-clear.confirming {
+            background: #e50914;
+            border-color: #e50914;
+            color: #fff;
+        }
+
+        .history-empty {
+            text-align: center;
+            color: #555;
+            font-size: 13px;
+            padding: 32px 0;
         }
 
         #connection-status {
@@ -222,8 +312,22 @@
             <canvas id="qr-code"></canvas>
             <p style="margin: 5px 0; font-size: 13px; color: #aaa;">Scan to search &amp; queue songs</p>
         </div>
-        <h3>Up Next</h3>
-        <ul id="queue-list"></ul>
+
+        <div class="tab-bar">
+            <button class="tab-btn active" onclick="switchTab('queue')">Up Next</button>
+            <button class="tab-btn" onclick="switchTab('history')">History</button>
+        </div>
+
+        <div id="tab-queue" class="tab-panel active">
+            <ul id="queue-list" class="song-list"></ul>
+        </div>
+
+        <div id="tab-history" class="tab-panel">
+            <div class="history-header">
+                <button id="clear-history-btn" class="btn-clear" onclick="handleClearHistory()">Clear History</button>
+            </div>
+            <ul id="history-list" class="song-list"></ul>
+        </div>
     </div>
 
     <script src="https://www.youtube.com/iframe_api"></script>
@@ -232,6 +336,9 @@
         let playerReady = false;
         let currentSong = null;
         const queue = [];
+        let history = loadHistory();
+        let clearConfirming = false;
+        let clearTimer = null;
 
         // Karaoke Mode state
         let karaokeActive = false;
@@ -239,8 +346,11 @@
         let audioCtx = null;
         let sourceNode = null;
         let splitterNode = null;
-        let leftGain = null;
-        let rightGain = null;
+        // 4 gain nodes for cross-routing: each source channel → both speakers
+        let llGain = null; // left source → left speaker
+        let lrGain = null; // left source → right speaker
+        let rlGain = null; // right source → left speaker
+        let rrGain = null; // right source → right speaker
         let mergerNode = null;
 
         // Feature detection: show karaoke button only on supported browsers
@@ -260,10 +370,13 @@
 
         async function startKaraokeMode() {
             try {
-                // Request tab audio capture (video is required by the API but we discard it)
+                // Request tab audio capture
+                // - suppressLocalAudioPlayback: prevents echo by silencing the
+                //   original tab audio; we re-output it through our Web Audio graph
+                // - preferCurrentTab: pre-selects this tab in the share dialog
                 karaokeStream = await navigator.mediaDevices.getDisplayMedia({
                     video: true,
-                    audio: true,
+                    audio: { suppressLocalAudioPlayback: true },
                     preferCurrentTab: true
                 });
 
@@ -279,20 +392,30 @@
                 // Stop the video track — we only need audio
                 karaokeStream.getVideoTracks().forEach(t => t.stop());
 
-                // Build the Web Audio graph
+                // Build the Web Audio graph with cross-routing
+                // This lets us send a single source channel to BOTH speakers (mono)
                 audioCtx = new AudioContext();
                 sourceNode = audioCtx.createMediaStreamSource(karaokeStream);
                 splitterNode = audioCtx.createChannelSplitter(2);
-                leftGain = audioCtx.createGain();
-                rightGain = audioCtx.createGain();
+                llGain = audioCtx.createGain(); // L→L
+                lrGain = audioCtx.createGain(); // L→R
+                rlGain = audioCtx.createGain(); // R→L
+                rrGain = audioCtx.createGain(); // R→R
                 mergerNode = audioCtx.createChannelMerger(2);
 
-                // Wire: source → splitter → gains → merger → speakers
+                // Wire: source → splitter → 4 gain paths → merger → speakers
                 sourceNode.connect(splitterNode);
-                splitterNode.connect(leftGain, 0);  // Left channel
-                splitterNode.connect(rightGain, 1); // Right channel
-                leftGain.connect(mergerNode, 0, 0);
-                rightGain.connect(mergerNode, 0, 1);
+                // Left source channel (splitter output 0)
+                splitterNode.connect(llGain, 0); // left src → left-to-left gain
+                splitterNode.connect(lrGain, 0); // left src → left-to-right gain
+                // Right source channel (splitter output 1)
+                splitterNode.connect(rlGain, 1); // right src → right-to-left gain
+                splitterNode.connect(rrGain, 1); // right src → right-to-right gain
+                // Route to merger (input 0 = left speaker, input 1 = right speaker)
+                llGain.connect(mergerNode, 0, 0); // L→L speaker
+                lrGain.connect(mergerNode, 0, 1); // L→R speaker
+                rlGain.connect(mergerNode, 0, 0); // R→L speaker
+                rrGain.connect(mergerNode, 0, 1); // R→R speaker
                 mergerNode.connect(audioCtx.destination);
 
                 // Update UI
@@ -324,14 +447,16 @@
             // Tear down audio graph
             if (sourceNode) { try { sourceNode.disconnect(); } catch(e) {} }
             if (splitterNode) { try { splitterNode.disconnect(); } catch(e) {} }
-            if (leftGain) { try { leftGain.disconnect(); } catch(e) {} }
-            if (rightGain) { try { rightGain.disconnect(); } catch(e) {} }
+            if (llGain) { try { llGain.disconnect(); } catch(e) {} }
+            if (lrGain) { try { lrGain.disconnect(); } catch(e) {} }
+            if (rlGain) { try { rlGain.disconnect(); } catch(e) {} }
+            if (rrGain) { try { rrGain.disconnect(); } catch(e) {} }
             if (mergerNode) { try { mergerNode.disconnect(); } catch(e) {} }
             if (audioCtx) { audioCtx.close().catch(() => {}); }
             if (karaokeStream) { karaokeStream.getTracks().forEach(t => t.stop()); }
 
             // Reset state
-            sourceNode = splitterNode = leftGain = rightGain = mergerNode = audioCtx = karaokeStream = null;
+            sourceNode = splitterNode = llGain = lrGain = rlGain = rrGain = mergerNode = audioCtx = karaokeStream = null;
             karaokeActive = false;
 
             // Update UI
@@ -344,19 +469,27 @@
         function setChannel(mode, clickedBtn) {
             if (!karaokeActive) return;
 
-            // Update gain values
+            // Set gains to route selected channel(s) to BOTH speakers
             switch (mode) {
                 case 'left':
-                    leftGain.gain.value = 1;
-                    rightGain.gain.value = 0;
+                    // Left source → both speakers, Right source → muted
+                    llGain.gain.value = 1;
+                    lrGain.gain.value = 1;
+                    rlGain.gain.value = 0;
+                    rrGain.gain.value = 0;
                     break;
                 case 'right':
-                    leftGain.gain.value = 0;
-                    rightGain.gain.value = 1;
+                    // Right source → both speakers, Left source → muted
+                    llGain.gain.value = 0;
+                    lrGain.gain.value = 0;
+                    rlGain.gain.value = 1;
+                    rrGain.gain.value = 1;
                     break;
-                default: // both
-                    leftGain.gain.value = 1;
-                    rightGain.gain.value = 1;
+                default: // both — normal stereo
+                    llGain.gain.value = 1;
+                    lrGain.gain.value = 0;
+                    rlGain.gain.value = 0;
+                    rrGain.gain.value = 1;
                     break;
             }
 
@@ -384,6 +517,10 @@
         }
 
         function playNext() {
+            // Move the finished/current song to history before advancing
+            if (currentSong) {
+                addToHistory(currentSong);
+            }
             if (queue.length > 0) {
                 currentSong = queue.shift();
                 renderQueue();
@@ -396,8 +533,14 @@
         }
 
         function skipSong() {
+            if (currentSong) {
+                addToHistory(currentSong);
+            }
             if (queue.length > 0) {
-                playNext();
+                currentSong = queue.shift();
+                renderQueue();
+                updateNowPlaying();
+                player.loadVideoById(currentSong.id);
             } else if (player && playerReady) {
                 player.stopVideo();
                 currentSong = null;
@@ -424,10 +567,99 @@
             list.innerHTML = queue.map((item, idx) =>
                 `<li>
                     <span class="song-info"><b>#${idx + 1}</b> ${escapeHtml(item.title)}</span>
-                    <button class="remove-btn" onclick="removeFromQueue(${idx})" title="Remove">✕</button>
+                    <div class="row-actions">
+                        <button class="remove-btn" onclick="removeFromQueue(${idx})" title="Remove">✕</button>
+                    </div>
                 </li>`
             ).join('');
         }
+
+        // ---- Tab switching ----
+        function switchTab(tab) {
+            document.querySelectorAll('.tab-btn').forEach((b, i) => {
+                b.classList.toggle('active', (tab === 'queue' && i === 0) || (tab === 'history' && i === 1));
+            });
+            document.getElementById('tab-queue').classList.toggle('active', tab === 'queue');
+            document.getElementById('tab-history').classList.toggle('active', tab === 'history');
+            if (tab === 'history') renderHistory();
+        }
+
+        // ---- History (localStorage-backed) ----
+        function loadHistory() {
+            try {
+                return JSON.parse(localStorage.getItem('songkhuai-history') || '[]');
+            } catch { return []; }
+        }
+
+        function saveHistory() {
+            localStorage.setItem('songkhuai-history', JSON.stringify(history));
+        }
+
+        function addToHistory(song) {
+            history.unshift({ id: song.id, title: song.title, ts: Date.now() });
+            saveHistory();
+            renderHistory();
+        }
+
+        function removeFromHistory(index) {
+            history.splice(index, 1);
+            saveHistory();
+            renderHistory();
+        }
+
+        function requeueFromHistory(index) {
+            const song = history[index];
+            queue.push({ id: song.id, title: song.title });
+            renderQueue();
+            // auto-play if idle
+            if (playerReady && player && (player.getPlayerState() !== 1 && player.getPlayerState() !== 2)) {
+                playNext();
+            }
+        }
+
+        function handleClearHistory() {
+            const btn = document.getElementById('clear-history-btn');
+            if (clearConfirming) {
+                // Second click — actually clear
+                clearTimeout(clearTimer);
+                history = [];
+                saveHistory();
+                renderHistory();
+                clearConfirming = false;
+                btn.textContent = 'Clear History';
+                btn.classList.remove('confirming');
+            } else {
+                // First click — enter confirm state
+                clearConfirming = true;
+                btn.textContent = 'Tap again to confirm';
+                btn.classList.add('confirming');
+                clearTimer = setTimeout(() => {
+                    clearConfirming = false;
+                    btn.textContent = 'Clear History';
+                    btn.classList.remove('confirming');
+                }, 3000);
+            }
+        }
+
+        function renderHistory() {
+            const list = document.getElementById('history-list');
+            if (history.length === 0) {
+                list.innerHTML = '<li class="history-empty" style="background:none;">No history yet</li>';
+                return;
+            }
+            list.innerHTML = history.map((item, idx) =>
+                `<li>
+                    <span class="song-info">${escapeHtml(item.title)}</span>
+                    <div class="row-actions">
+                        <button class="requeue-btn" onclick="requeueFromHistory(${idx})" title="Add back to queue">↩</button>
+                        <button class="remove-btn" onclick="removeFromHistory(${idx})" title="Remove">✕</button>
+                    </div>
+                </li>`
+            ).join('');
+        }
+
+        // Initial render of history on load
+        renderHistory();
 
         // PeerJS Connection Setup
         // Generate a stable host ID that survives page refreshes
